@@ -54,6 +54,7 @@ except Exception:
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 import website_audit  # noqa: E402
+import name_matcher  # noqa: E402
 
 
 PLACES_API_URL = "https://places.googleapis.com/v1/places:searchText"
@@ -724,11 +725,28 @@ def build_ads_per_bucket(business, competitors, seo_per_bucket, prospect_website
             names.append(name)
 
         prospect_match = None
+        # 1) Domain-only match: highest precision. Corporate operator ads
+        # using a parent domain (StoneMor, SCI/Dignity, etc.) won't match
+        # the local cemetery's domain.
         if prospect_domain:
             for adv in ads_list:
                 ad_domain = normalize_domain((adv or {}).get("domain", ""))
                 if ad_domain and ad_domain == prospect_domain:
                     prospect_match = (adv or {}).get("name", ad_domain)
+                    break
+        # 2) Name-based fallback: many SERP scrapers fail to extract the
+        # advertiser's display domain, leaving the domain field empty.
+        # Without a name fallback the scorecard prints "Not running" even
+        # when the prospect's name is sitting in the ad block. The
+        # normalized matcher handles deathcare suffix variations
+        # (e.g. "Holy Cross Cemetery" vs "Holy Cross Catholic Cemetery").
+        if not prospect_match and business:
+            for adv in ads_list:
+                adv_name = (adv or {}).get("name", "")
+                if not adv_name:
+                    continue
+                if name_matcher.name_matches(business, adv_name):
+                    prospect_match = adv_name
                     break
 
         comp_hits = []
