@@ -442,6 +442,13 @@ def _build_recommendations_top2(results):
     ]
 
 
+def _web_answer(value, no_text):
+    """Yes / the No text / "Couldn't check" (None: the page the check needed could not be read)."""
+    if value is None:
+        return "Couldn't check"
+    return "Yes" if value else no_text
+
+
 def build_pdf(results):
     business = results.get("business", "Prospect")
     city = results.get("city", "")
@@ -697,23 +704,23 @@ def build_pdf(results):
         property_map = web.get("property_map")
         inv_offerings = (web.get("inventory_offerings") or [])[:5]
         bits = []
-        bits.append("Real photos: " + ("Yes" if wc.get("real_photos") else "No (stock)"))
+        bits.append("Real photos: " + _web_answer(wc.get("real_photos"), "No (stock)"))
         if psi_score is not None:
             bits.append(f"PageSpeed: {psi_score}/100")
         else:
-            bits.append("PageSpeed: ?")
-        bits.append("Family/owner story: " + ("Yes" if wc.get("family_owner_story") else "No"))
-        bits.append("Preneed form: " + ("Yes" if wc.get("preneed_form") else "No"))
-        bits.append("Schema: " + ("Yes" if wc.get("localbusiness_schema") else "No"))
-        bits.append("Reviews widget: " + ("Yes" if wc.get("google_reviews_widget") else "No"))
-        bits.append("Property tour: " + ("Yes" if wc.get("property_tour_photos") else "No"))
+            bits.append("PageSpeed: Couldn't check")
+        bits.append("Family/owner story: " + _web_answer(wc.get("family_owner_story"), "No"))
+        bits.append("Preneed form: " + _web_answer(wc.get("preneed_form"), "No"))
+        bits.append("Schema: " + _web_answer(wc.get("localbusiness_schema"), "No"))
+        bits.append("Reviews widget: " + _web_answer(wc.get("google_reviews_widget"), "No"))
+        bits.append("Property tour: " + _web_answer(wc.get("property_tour_photos"), "No"))
         if wc.get("inventory_info"):
             inv_label = "Yes"
             if inv_offerings:
                 inv_label = f"Yes ({', '.join(inv_offerings)})"
             bits.append("Inventory: " + inv_label)
         else:
-            bits.append("Inventory: No")
+            bits.append("Inventory: " + _web_answer(wc.get("inventory_info"), "No"))
         web_detail = "  |  ".join(bits)
         extras = []
         if property_map is not None:
@@ -722,7 +729,7 @@ def build_pdf(results):
             extras.append(f"<b>Platform:</b> {platform}")
         if extras:
             web_detail += "<br/>" + "  |  ".join(extras)
-        web_grade_display = grades.get("website") or "F"
+        web_grade_display = grades.get("website") or "N/A"
 
     # Ads per bucket - cemetery framing for empty buckets
     ads_lines = []

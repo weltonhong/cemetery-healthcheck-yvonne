@@ -48,6 +48,7 @@ import datetime
 import json
 import os
 import re
+import threading
 import subprocess
 import sys
 import urllib.parse
@@ -82,6 +83,39 @@ def get_google_api_key():
         return ""
 
 
+
+# ---- "Couldn't check", never "No" from a page nobody read (Welton, 2026-10-20) ----------------------
+# A check used to answer No whenever a page it needed could not be read (blocked, rate-limited, server
+# error, no connection), and when a site refused the address probes. Now every fetch and probe made
+# while a check runs notes the pages it could not read, and measured() turns that check's No into None
+# ("Couldn't check"). A Yes stands (it was seen); a page that is not there (404/410) is still a No.
+_reads = threading.local()
+
+
+def _note_unread(url, why):
+    unread = getattr(_reads, "unread", None)
+    if unread is not None:
+        unread.append((url, why))
+
+
+def measured(check, *args):
+    """Run one check. Its No becomes None when a page it needed could not be read."""
+    _reads.unread = []
+    try:
+        result = check(*args)
+    finally:
+        unread, _reads.unread = _reads.unread, None
+    if not unread:
+        return result
+    if result is False or result is None:
+        return None
+    if isinstance(result, dict) and not result.get("pass"):
+        return dict(result, **{"pass": None})
+    if isinstance(result, tuple) and result and not result[0]:
+        return (None,) + tuple(result[1:])
+    return result
+
+
 def fetch_page(url, timeout=15):
     if not url:
         return None, None, "no url"
@@ -89,8 +123,11 @@ def fetch_page(url, timeout=15):
         url = "https://" + url
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+        if r.status_code in (401, 403, 407, 429) or r.status_code >= 500:
+            _note_unread(url, "HTTP %s" % r.status_code)
         return r.text, r.status_code, r.url
     except Exception as e:
+        _note_unread(url, str(e)[:80])
         return None, None, str(e)
 
 
@@ -137,7 +174,10 @@ def find_internal_link_by_path(html, base_url, paths):
             r = requests.head(url, headers=HEADERS, timeout=8, allow_redirects=True)
             if r.status_code and 200 <= r.status_code < 300:
                 return r.url
-        except Exception:
+            if r.status_code not in (404, 410):
+                _note_unread(url, "HEAD %s" % r.status_code)   # the site would not say; not "no page"
+        except Exception as e:
+            _note_unread(url, str(e)[:80])
             continue
     return None
 
@@ -275,9 +315,20 @@ FAMILY_OWNER_SIGNALS = [
 ]
 
 
+def _family_signal_count(html):
+    text = re.sub(r"<[^>]+>", " ", html or "").lower()
+    text = re.sub(r"\s+", " ", text)
+    return sum(1 for pat in FAMILY_OWNER_SIGNALS if re.search(pat, text))
+
+
 def check_family_owner_story(home_html, base_url):
     """Pass if the About page names actual ownership / management figures
     OR establishes a clear long-standing operating history."""
+    # The homepage counts too (Welton 2026-10-20): La Paloma's says "a family-owned and operated
+    # funeral home" and "locally owned since 2006", and the sheet printed "No (generic About page)"
+    # because only the About page was read.
+    if _family_signal_count(home_html) >= 2:
+        return True
     about_url = (
         find_internal_link(home_html, base_url, ABOUT_URL_KEYWORDS)
         or find_internal_link_by_path(home_html, base_url, ABOUT_PATH_FALLBACKS)
@@ -667,8 +718,8 @@ def grade_website(checks):
     """A=8/8, B=6-7, C=3-5, D=1-2, F=0. None values are excluded and the
     threshold is scaled proportionally."""
     real = [(k, v) for k, v in checks.items() if v is not None]
-    if not real:
-        return "F"
+    if not real or len(real) * 2 < len(checks):
+        return None   # too little measured to grade (most checks could not read their page)
     passed = sum(1 for _, v in real if v)
     total = len(real)
     scaled = round(passed * 8 / total)
@@ -716,11 +767,11 @@ def audit(url):
 
     with ThreadPoolExecutor(max_workers=6) as ex:
         psi_future = ex.submit(check_pagespeed, final_url, api_key)
-        family_future = ex.submit(check_family_owner_story, html, base_url)
-        preneed_future = ex.submit(check_preneed_form, html, base_url)
-        gallery_future = ex.submit(check_property_tour_photos, html, base_url)
-        inv_future = ex.submit(check_inventory_info, html, base_url)
-        map_future = ex.submit(check_property_map, html, base_url)
+        family_future = ex.submit(measured, check_family_owner_story, html, base_url)
+        preneed_future = ex.submit(measured, check_preneed_form, html, base_url)
+        gallery_future = ex.submit(measured, check_property_tour_photos, html, base_url)
+        inv_future = ex.submit(measured, check_inventory_info, html, base_url)
+        map_future = ex.submit(measured, check_property_map, html, base_url)
 
         psi = psi_future.result()
         family_pass = family_future.result()

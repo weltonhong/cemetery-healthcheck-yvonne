@@ -542,7 +542,7 @@ if st.session_state.get("scan_done"):
                     ("inventory_info", "Inventory / availability info"),
                 ]:
                     v = checks.get(k)
-                    mark = "✅" if v is True else ("❌" if v is False else "—")
+                    mark = "✅" if v is True else ("❌" if v is False else "Couldn't check")
                     st.write(f"- {label}: {mark}")
                 inv = web.get("inventory_offerings") or []
                 if inv:

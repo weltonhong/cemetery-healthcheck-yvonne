@@ -1229,7 +1229,7 @@ def run_health_check(business, cities, state, listing=None):
                 return true_label
             if v is False:
                 return false_label
-            return "?"
+            return "Couldn't check"
 
         psi_score = web.get("pagespeed_score")
         if psi_score is None:
@@ -1242,7 +1242,7 @@ def run_health_check(business, cities, state, listing=None):
         inventory_display = (
             f"Yes ({', '.join(inventory_offerings[:5])})"
             if c.get("inventory_info") and inventory_offerings
-            else ("Yes" if c.get("inventory_info") else "No")
+            else ("Yes" if c.get("inventory_info") else ("Couldn't check" if c.get("inventory_info") is None else "No"))
         )
         # Property map is a non-graded data point at the top level of web
         property_map = web.get("property_map")
@@ -1258,10 +1258,10 @@ def run_health_check(business, cities, state, listing=None):
             f"Inventory / availability: {inventory_display}",
             f"Property map:             {yn(property_map, 'Yes', 'No')}  (data point, not graded)",
             f"Platform:                 {platform}",
-            f"Grade: {web.get('grade', 'F')}",
+            f"Grade: {web.get('grade') or 'none (too little could be read)'}",
         ]
         print_section("WEBSITE:", web_lines)
-        web_grade = web.get("grade", "F")
+        web_grade = web.get("grade")
     results["website_grade"] = web_grade
 
     # Print Reviews snapshot
