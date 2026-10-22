@@ -363,7 +363,7 @@ def _build_recommendations_top2(results):
     if psi is not None and psi < 40:
         score = 70
         candidates.append((score,
-            f"Your homepage scores <b>{psi}/100</b> on mobile speed. Families "
+            f"Google's mobile speed test scored your homepage <b>{measured.speed_text(web)} out of 100</b>. Families "
             f"researching cemeteries on iPhones are left waiting on a page Google scores as slow, and a slow page loses them before it loads. "
             f""
         ))
@@ -679,7 +679,7 @@ def build_pdf(results):
         bits = []
         bits.append("Real photos: " + _web_answer(wc.get("real_photos"), "No (stock)"))
         if psi_score is not None:
-            bits.append(f"PageSpeed: {psi_score}/100")
+            bits.append(f"PageSpeed: {measured.speed_text(web)}/100")
         else:
             bits.append("PageSpeed: Couldn't check")
         bits.append("Family/owner story: " + _web_answer(wc.get("family_owner_story"), "No"))

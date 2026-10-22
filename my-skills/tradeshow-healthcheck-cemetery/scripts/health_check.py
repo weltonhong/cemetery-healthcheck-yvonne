@@ -1251,7 +1251,7 @@ def run_health_check(business, cities, state, listing=None):
         if psi_score is None:
             psi_display = "Unable to test"
         else:
-            psi_display = f"{psi_score}/100 " + ("(PASS)" if psi_score >= 50 else "(FAIL)")
+            psi_display = f"{measured.speed_text(web)}/100 " + ("(PASS)" if psi_score >= 50 else "(FAIL)")
 
         platform = web.get("platform") or "Unknown"
         inventory_offerings = web.get("inventory_offerings") or []
