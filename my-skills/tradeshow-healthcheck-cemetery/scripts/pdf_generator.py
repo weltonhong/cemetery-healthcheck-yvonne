@@ -278,6 +278,21 @@ def build_recommendations(results):
     return _build_recommendations_top2(results)
 
 
+def _typed(bucket, seo, results):
+    """The words a person types for a search, as the scan sent them ("funeral home Lancaster NY"), never the sheet's
+    internal label "funeral home / Lancaster" (Welton 2026-10-22)."""
+    q = (seo.get(bucket) or {}).get("query")
+    if q:
+        return q
+    kw, _, city = bucket.partition(" / ")
+    return " ".join(x for x in (kw, city, results.get("state") or "") if x)
+
+
+def _quoted(searches):
+    q = ['"%s"' % s for s in searches]
+    return q[0] if len(q) == 1 else ", ".join(q[:-1]) + " and " + q[-1]
+
+
 def _build_recommendations_top2(results):
     pack_results = (results.get("3pack") or {}).get("results") or {}
     seo = results.get("seo") or {}
@@ -310,7 +325,7 @@ def _build_recommendations_top2(results):
             comps = ", ".join(top_3)
             score = 100 + len(missing_packs) * 8
             candidates.append((score,
-                f"<b>{comps}</b> own the Google Map Pack for \"{target_bucket}\". "
+                f"<b>{comps}</b> own the Google Map Pack for \"{_typed(target_bucket, seo, results)}\". "
                 f"When a family searches that, those cemeteries get the inquiry. "
                 f"Your name is not in the top 3 on the map."
             ))
@@ -335,10 +350,10 @@ def _build_recommendations_top2(results):
         or ((seo.get(b) or {}).get("rank") or 99) > 10
     ]
     if not_ranking:
-        labels_str = ", ".join(not_ranking)
+        labels_str = _quoted([_typed(b, seo, results) for b in not_ranking])
         score = 50 + len(not_ranking) * 5
         candidates.append((score,
-            f"When we searched \"{labels_str}\" {measured.searched_when(results)}, your cemetery was not "
+            f"When we searched {labels_str} {measured.searched_when(results)}, your cemetery was not "
             f"on the first page of the regular results."
         ))
 
@@ -460,6 +475,7 @@ def build_pdf(results):
         "section", parent=styles["Heading2"],
         fontName="Helvetica-Bold", fontSize=12, textColor=RRM_DARK,
         spaceAfter=6, spaceBefore=4,
+        keepWithNext=1,  # never left alone at the foot of a page (Welton 2026-10-22: Haven, Home Instead)
     )
     body = ParagraphStyle(
         "body", parent=styles["Normal"],
@@ -714,8 +730,26 @@ def build_pdf(results):
         [area("Website"), web_grade_display, cell(web_detail)],
     ]
 
+    # One table row per search line, so a tall section breaks between two searches and the table never breaks
+    # after its first row (Welton 2026-10-22: Pacer's page 1 held only Google Reviews, the map row moved whole to
+    # page 2). The lines of one section share its background and have no rule between them, so it reads as one row.
+    line_rows, section_of = [rows[0]], [0]
+    for n, r in enumerate(rows[1:], start=1):
+        lines = ({2: pack_detail, 3: seo_detail}.get(n) or "").split("<br/>")
+        # The first row carries two searches: beside one, a two-line area name ("Google Organic Rankings (SEO)")
+        # opened a gap. A span would fix it too, but a table will not split inside a span.
+        lines = ["<br/>".join(lines[:2])] + lines[2:]
+        if len(lines) > 1:
+            line_rows.append([r[0], r[1], cell(lines[0])])
+            line_rows += [["", "", cell(x)] for x in lines[1:]]
+        else:
+            line_rows.append(r)
+        section_of += [n] * (len(line_rows) - len(section_of))
+    rows = line_rows
+
     sc = Table(
         rows,
+        repeatRows=1,
         colWidths=[2.0 * inch, 0.7 * inch, 4.3 * inch],
     )
     style = [
@@ -729,8 +763,8 @@ def build_pdf(results):
         ("VALIGN", (0, 1), (-1, -1), "TOP"),
         ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
         ("FONTSIZE", (1, 1), (1, -1), 12),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, RRM_LIGHT]),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+        ("LINEAFTER", (0, 0), (-2, -1), 0.5, colors.lightgrey),
         ("LEFTPADDING", (0, 0), (-1, -1), 7),
         ("RIGHTPADDING", (0, 0), (-1, -1), 7),
         ("TOPPADDING", (0, 0), (-1, -1), 7),
@@ -739,6 +773,13 @@ def build_pdf(results):
     for i, row in enumerate(rows[1:], start=1):
         g = row[1]
         style.append(("TEXTCOLOR", (1, i), (1, i), GRADE_COLORS.get(g, RRM_GRAY)))
+    for i in range(1, len(rows)):
+        bg = [colors.white, RRM_LIGHT][(section_of[i] - 1) % 2]
+        style.append(("BACKGROUND", (0, i), (-1, i), bg))
+        if section_of[i] == section_of[i - 1]:
+            style += [("TOPPADDING", (0, i), (-1, i), 0), ("BOTTOMPADDING", (0, i - 1), (-1, i - 1), 0)]
+        else:
+            style.append(("LINEABOVE", (0, i), (-1, i), 0.5, colors.lightgrey))
     sc.setStyle(TableStyle(style))
     story.append(sc)
     # When the searches ran, once under the table (Welton 2026-10-22).
