@@ -1,8 +1,14 @@
 ---
 name: tradeshow-healthcheck-cemetery
-description: "Trade show / cold-outreach booth tool for CEMETERY prospects. Runs a fast (60-90 second) online presence audit on a cemetery prospect across 1-3 cities they serve and prints a live scorecard, then generates a branded one-page Ring Ring Marketing PDF. Scans Google reviews, 3-Pack (cemetery + cemetery plots), SEO organic, website, reviews snapshot, and competitor ads in parallel. CTA routes to Yvonne Reese. Use when 'tradeshow healthcheck cemetery', 'health check cemetery', 'cemetery booth audit', 'cemetery trade show audit', 'health check [cemetery] [city] [state]'."
+description: "Trade show / cold-outreach booth tool for CEMETERY prospects. Runs a fast (60-90 second) online presence audit on a cemetery prospect across 1-3 cities they serve and prints a live scorecard, then generates a branded one-page Ring Ring Marketing PDF. Scans Google reviews, 3-Pack (cemetery + cemetery plots), SEO organic, website, reviews snapshot in parallel. CTA routes to Yvonne Reese. Use when 'tradeshow healthcheck cemetery', 'health check cemetery', 'cemetery booth audit', 'cemetery trade show audit', 'health check [cemetery] [city] [state]'."
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
+
+> **RETIRED 2026-10-22 (Welton): ads are off the booth sheet, the screen and the live log.** 50 of 53 recorded
+> answers from the search source carried no ads while Chrome showed them, so "No ads seen" meant we were blind, not
+> that the market was empty. Every Ads row, Ads grade, "open lane" line and COMPETITOR ADS / GOOGLE ADS sample
+> below describes the retired behaviour. The organic Top 3 is Google's actual top three named by Google listings, or
+> nothing; the most-reviewed rival is a listing within 25 miles that is not theirs by place id, phone or street.
 
 # TRADESHOW HEALTH CHECK - CEMETERY
 
