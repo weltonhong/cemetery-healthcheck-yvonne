@@ -500,7 +500,7 @@ if st.session_state.get("scan_done"):
                      if listing_confirm.known(tgt) else "**Target:** " + listing_confirm.reason(tgt))
             if comp:
                 st.write(
-                    f"**Top competitor:** {comp.get('name', '?')}: "
+                    f"**Most-reviewed nearby listing:** {comp.get('name', '?')}: "
                     f"{comp.get('review_count', 0)} reviews, "
                     f"{comp.get('rating', '-')} stars"
                 )
