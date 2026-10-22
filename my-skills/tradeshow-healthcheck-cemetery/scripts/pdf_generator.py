@@ -14,6 +14,7 @@ from pathlib import Path
 import headline
 import listing_confirm
 import ads_words
+import measured
 
 import qrcode
 
@@ -254,7 +255,7 @@ def pack_status(pack_row):
         return UNSCANNED
     if row.get("in_3_pack"):
         return IN_PACK
-    if row.get("maybe_rank"):
+    if row.get("maybe_rank") or row.get("no_id"):
         # A card may be theirs but its place id did not confirm it
         # (scripts/map_identity.py): never a rank, never a miss.
         return UNCONFIRMED
@@ -306,7 +307,7 @@ def _build_recommendations_top2(results):
             candidates.append((score,
                 f"<b>{comps}</b> own the Google Map Pack for \"{target_bucket}\". "
                 f"When a family searches that, those cemeteries get the inquiry. "
-                f"Your name never appears on the map. Every search is a family "
+                f"Your name is not in the top 3 on the map. Every search is a family "
                 f"ready to buy a plot or arrange interment this month, calling "
                 f"your competitor instead of you."
             ))
@@ -328,9 +329,9 @@ def _build_recommendations_top2(results):
     # If competitors ARE running ads and prospect is not -> standard pain.
     # If NO ONE is running ads in a bucket -> "open lane" opportunity.
     chose_ads_candidate = False
-    for label in bucket_labels:
+    for label in measured.read(bucket_labels, ads_per_bucket):
         d = ads_per_bucket.get(label) or {}
-        if d.get("prospect_running_ads") or d.get("prospect_maybe_ad"):
+        if d.get("prospect_running_ads") or d.get("prospect_maybe_ad") or d.get("theirs_unknown"):
             continue
         comps = d.get("competitors_running_ads") or []
         all_ads = d.get("all_advertisers") or []
@@ -339,8 +340,7 @@ def _build_recommendations_top2(results):
             names = ", ".join(display_names)
             score = 75 + len(all_ads) * 3
             candidates.append((score,
-                f"<b>{names}</b> are paying Google to put their phone number "
-                f"above everything else when families search \"{label}\". Your ad was not there when we searched. Every click on a sponsored result is "
+                f"<b>{names}</b> are paying Google to show their ad when families search \"{label}\". Your ad was not there when we searched. Every click on a sponsored result is "
                 f"a family handing their preneed inquiry to your competitor "
                 f"before they ever see your name."
             ))
@@ -351,23 +351,24 @@ def _build_recommendations_top2(results):
     # the open lane in the home city.
     if not chose_ads_candidate:
         empty_buckets = [
-            b for b in bucket_labels
+            b for b in measured.read(bucket_labels, ads_per_bucket)
             if not (ads_per_bucket.get(b) or {}).get("all_advertisers")
+            and not (ads_per_bucket.get(b) or {}).get("ads_unnamed")
         ]
         if empty_buckets:
             target_bucket = empty_buckets[0]
             score = 65
             candidates.append((score,
-                f"No cemetery is running Google Ads for \"{target_bucket}\". "
-                f"This is an open lane. The first cemetery to start advertising "
+                f"No ads came up when we searched \"{target_bucket}\". "
+                f"That search is an open lane. The first cemetery to start advertising "
                 f"will capture the high-intent preneed searches with no "
-                f"competition for the click -- and the preneed sales that "
+                f"competition for the click, and the preneed sales that "
                 f"come with them."
             ))
 
     # ----- SEO Organic --------------------------------------------------
     not_ranking = [
-        b for b in bucket_labels
+        b for b in measured.read(bucket_labels, seo, organic=True)
         if (seo.get(b) or {}).get("rank") is None
         or ((seo.get(b) or {}).get("rank") or 99) > 10
     ]
@@ -389,15 +390,14 @@ def _build_recommendations_top2(results):
         score = 70
         candidates.append((score,
             f"Your homepage scores <b>{psi}/100</b> on mobile speed. Families "
-            f"researching cemeteries on iPhones wait five-plus seconds before "
-            f"they see anything and most of them bounce before the page loads. "
+            f"researching cemeteries on iPhones are left waiting on a page Google scores as slow, and a slow page loses them before it loads. "
             f"Every bounce is a preneed inquiry you should have answered that "
             f"you never will."
         ))
     elif web_checks.get("property_tour_photos") is False:
         score = 65
         candidates.append((score,
-            f"Your website does not show actual property photos -- gallery, "
+            f"Your website does not show actual property photos: gallery, "
             f"aerial, or sections. Cemeteries are a buying-on-sight business; "
             f"families want to SEE the grounds before they call. When the photos "
             f"are stock or sparse, families call the cemetery whose property they "
@@ -408,14 +408,14 @@ def _build_recommendations_top2(results):
         candidates.append((score,
             f"Your website has no clear preneed contact form or 'schedule a "
             f"property tour' CTA. Preneed shoppers will not pick up the phone "
-            f"on the first visit -- they want to fill out a form and have "
+            f"on the first visit. They want to fill out a form and have "
             f"someone call them back. Without that, you lose them to the "
             f"cemetery whose form is one click away."
         ))
     elif web_checks.get("inventory_info") is False:
         score = 55
         candidates.append((score,
-            f"Your website is vague about what you actually offer -- plots, "
+            f"Your website is vague about what you actually offer: plots, "
             f"mausoleum crypts, columbarium niches, cremation gardens, green "
             f"burial. When families can't see what is available, they assume "
             f"you don't have it and call the cemetery whose website spells it "
@@ -434,6 +434,10 @@ def _build_recommendations_top2(results):
     if candidates:
         return [text for _, text in candidates[:2]]
 
+    # A sentence about everything needs everything measured; otherwise nothing prints
+    # (scripts/measured.py, Welton 2026-10-21).
+    if not measured.everything_read(results, bucket_labels, listing_confirm.known(target), website_needed=True):
+        return []
     return [
         "Your foundation is strong across reviews, local visibility, and your "
         "website. The cemeteries in your service area are watching for any "
@@ -453,13 +457,13 @@ def build_pdf(results):
     business = results.get("business", "Prospect")
     city = results.get("city", "")
     state = results.get("state", "")
-    overall = results.get("overall_grade", "F")
+    overall = measured.grade_text(results.get("overall_grade"))
     grades = results.get("all_grades", {})
 
-    today = datetime.date.today().strftime("%B %d, %Y")
+    today = measured.sheet_date_text(results)   # the rep's day, never the server's UTC day
     desktop = get_desktop_path()
     desktop.mkdir(parents=True, exist_ok=True)
-    fname = f"HealthCheck_{safe_filename(business)}_{datetime.date.today().isoformat()}.pdf"
+    fname = f"HealthCheck_{safe_filename(business)}_{measured.sheet_day(results)[0] or 'undated'}.pdf"
     out_path = desktop / fname
 
     doc = SimpleDocTemplate(
@@ -525,7 +529,7 @@ def build_pdf(results):
 
     story.append(Paragraph(f"Online Health Check: {business}", h_title))
     story.append(Paragraph(
-        f"{city}, {state}  |  Scanned {today}",
+        f"{city}, {state}" + (f"  |  Scanned {today}" if today else ""),
         h_meta,
     ))
 
@@ -650,6 +654,8 @@ def build_pdf(results):
             return f"FOUND rank {d.get('rank')} (Top 3: {top_3_str})"
         if d.get("maybe_rank"):
             return f"Couldn't confirm: #{d.get('maybe_rank')} may be you (Top 3: {top_3_str})"
+        if d.get("no_id"):
+            return f"Couldn't confirm which card is theirs (Top 3: {top_3_str})"
         return f"NOT FOUND (Top 3: {top_3_str})"
 
     pack_lines_html = [
@@ -673,7 +679,7 @@ def build_pdf(results):
         rank = d.get("rank")
         top_3 = d.get("top_3") or []
         cleaned = [trim_title(t) for t in top_3[:3] if t]
-        if d.get("error"):
+        if measured.organic_failed(d):
             # The prospect is handed this PDF. A failed fetch must not appear
             # on it as a finding about their rankings.
             seo_lines_html.append(
@@ -695,7 +701,7 @@ def build_pdf(results):
 
     if web.get("unverified"):
         reason = web.get("unverified_reason") or web.get("error") or "blocked"
-        web_detail = reason if reason.startswith("Couldn't check") else f"Unable to verify -- {reason}"
+        web_detail = reason if reason.startswith("Couldn't check") else f"Couldn't check: {reason}"
         web_grade_display = "N/A"
     else:
         wc = web.get("checks", {})
@@ -744,10 +750,8 @@ def build_pdf(results):
             # on it as a finding about their advertising.
             ads_lines.append(
                 f"<b>{label}:</b> Couldn't check this search")
-        elif advs:
-            ads_lines.append(f"<b>{label}:</b> {', '.join(advs)}")
         else:
-            ads_lines.append(f"<b>{label}:</b> " + ads_words.none_seen(True))
+            ads_lines.append(f"<b>{label}:</b> " + ads_words.row_text(advs, d.get("ads_unnamed") or 0, True))
     ads_lines.append(
         f"<b>{business}:</b> "
         + ads_words.summary(ads, list(ads))
@@ -774,9 +778,9 @@ def build_pdf(results):
     rows = [
         ["AREA", "GRADE", "DETAILS"],
         [area("Google Reviews"), grades.get("reviews") or "N/A", cell(reviews_detail)],
-        [area("Google Local Map Rankings"), grades.get("3pack", "F"), cell(pack_detail)],
-        [area("Google Organic Rankings (SEO)"), grades.get("seo", "F"), cell(seo_detail)],
-        [area("Google Ads"), grades.get("ads", "F"), cell(ads_detail)],
+        [area("Google Local Map Rankings"), measured.grade_text(grades.get("3pack")), cell(pack_detail)],
+        [area("Google Organic Rankings (SEO)"), measured.grade_text(grades.get("seo")), cell(seo_detail)],
+        [area("Google Ads"), measured.grade_text(grades.get("ads")), cell(ads_detail)],
         [area("Website"), web_grade_display, cell(web_detail)],
     ]
 
@@ -809,8 +813,11 @@ def build_pdf(results):
     story.append(sc)
     story.append(Spacer(1, 14))
 
-    story.append(Paragraph("WHERE YOUR INQUIRIES ARE GOING", h_section))
-    for rec in build_recommendations(results):
+    # Nothing measured to say: no section at all, never a sentence built on a failed search.
+    recs = build_recommendations(results)
+    if recs:
+        story.append(Paragraph("WHERE YOUR INQUIRIES ARE GOING", h_section))
+    for rec in recs:
         story.append(Paragraph(f"&bull; {rec}", rec_style))
     story.append(Spacer(1, 10))
 

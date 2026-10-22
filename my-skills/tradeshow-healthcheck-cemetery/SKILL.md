@@ -50,7 +50,7 @@ Order:
 - Never batch multiple questions in one prompt. One question, wait, next question.
 - After each user answer, the next message is just the next blank question label - no acknowledgment text, no restating what they said.
 
-If the user answers "skip", "none", "n/a", or leaves a city blank, skip that city. Encourage filling all 3 — cemeteries draw from a wide radius.
+If the user answers "skip", "none", "n/a", or leaves a city blank, skip that city. Encourage filling all 3: cemeteries draw from a wide radius.
 
 ### Why prompt every time
 
@@ -110,7 +110,7 @@ The script:
 
 **No competitor available:** In small markets the prospect may have no real cemetery competitor. The scorecard prints "Limited competition in [city]" and the reviews grade is computed against the absolute scale only.
 
-**No advertisers detected:** Many cemeteries don't run ads in smaller markets. The scorecard frames this as opportunity rather than failure: "No cemetery in [city] is running Google Ads — open lane."
+**No advertisers detected:** Many cemeteries don't run ads in smaller markets. The scorecard frames this as opportunity rather than failure: "No cemetery in [city] is running Google Ads, open lane."
 
 ## Unable to Verify (Website)
 
