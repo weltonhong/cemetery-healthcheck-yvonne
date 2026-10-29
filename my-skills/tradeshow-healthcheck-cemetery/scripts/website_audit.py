@@ -56,6 +56,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+import site_reader   # the shared site reader, pinned byte-identical across the five tools (2026-10-29)
+
 
 HEADERS = {
     "User-Agent": (
@@ -173,12 +175,19 @@ def find_internal_link(html, base_url, url_keywords):
         for kw in url_keywords:
             if kw in href_low:
                 if href.startswith("http"):
-                    return href
-                if href.startswith("//"):
-                    return "https:" + href
-                if href.startswith("/"):
-                    return base_url + href
-                return urllib.parse.urljoin(base_url + "/", href)
+                    url = href
+                elif href.startswith("//"):
+                    url = "https:" + href
+                elif href.startswith("/"):
+                    url = base_url + href
+                else:
+                    url = urllib.parse.urljoin(base_url + "/", href)
+                if site_reader.same_site(url, base_url):
+                    return url
+                # Another site's page is not theirs (Welton 2026-10-29): not read, and a No that needed it is
+                # "couldn't check". Look at the next link.
+                _note_unread(url, "another site")
+                break
     return None
 
 
@@ -464,6 +473,9 @@ GALLERY_URL_KEYWORDS = [
     "/gallery", "/photos", "/photo-gallery", "/our-property",
     "/property", "/grounds", "/tour", "/virtual-tour", "/aerial",
     "/drone", "/sections", "/our-grounds", "/visit",
+    # A park's "features" page carries its named property photos (Forest Lawn Glendale, 2026-10-29: six chapels and
+    # grounds on /parks/glendale/glendale-features/, which no keyword above reached).
+    "-features", "/features", "/explore",
 ]
 GALLERY_PATH_FALLBACKS = [
     "/gallery", "/photos", "/property", "/our-property", "/grounds",
@@ -471,11 +483,23 @@ GALLERY_PATH_FALLBACKS = [
 ]
 
 
+# A photo shown as a background, or loaded lazily, is still a photo on the page (Welton 2026-10-29: Forest Lawn's
+# features page shows six named chapels and grounds as data-bg-image backgrounds, and <img> alone counted 1, so the
+# sheet said "does not show actual property photos" beside "Real photos: Yes").
+_BG_IMAGE = re.compile(
+    r"(?:data-(?:bg|bg-image|background|background-image|src|lazy-src)\s*=\s*[\"']|background(?:-image)?\s*:\s*)"
+    r"(?:url\()?\s*(?:&#0?39;|&quot;|[\"'])?([^\"'()&\s]+\.(?:jpe?g|webp))", re.IGNORECASE)
+# Photos only (.jpg, .webp): a background .png is the site's own decoration far more often than a photograph (the
+# 2026-10-29 replay: Vista Memorial's Wix "ironpatern" and "tiny_arrows" backgrounds turned a No into a Yes).
+
+
 def _count_inline_images(html):
     """Heuristic: count distinct image references on the page that look
     like real cemetery property shots. We strip out logos/headers/icons
-    by filename hint and require sane minimum dimension cues if present."""
+    by filename hint and require sane minimum dimension cues if present.
+    Background and lazy-loaded photos count the same as <img> (2026-10-29)."""
     imgs = re.findall(r'<img\b[^>]+src=["\']([^"\']+)["\'][^>]*>', html, re.IGNORECASE)
+    imgs += _BG_IMAGE.findall(html)
     seen = set()
     keep = []
     for src in imgs:
@@ -494,14 +518,27 @@ def _count_inline_images(html):
     return len(keep)
 
 
+def _matching_links(html, base_url, keywords, limit=3):
+    """The first `limit` distinct links whose path holds a keyword, in page order (Welton 2026-10-29: one was not
+    enough; Forest Lawn's photos were on its third gallery-like link, its offerings on its third offerings-like one).
+    The shared reader's, so every tool follows links the same way."""
+    skipped = []
+    out = site_reader.links(html, base_url, keywords, limit, skipped)
+    for url in skipped:
+        _note_unread(url, "another site")      # not theirs, not read: a No that needed it is "couldn't check"
+    return out
+
+
 def check_property_tour_photos(home_html, base_url):
     """Pass if there's a gallery / photos / virtual tour page with several
     images, OR the homepage itself has 6+ non-stock images on it."""
-    gallery_url = (
-        find_internal_link(home_html, base_url, GALLERY_URL_KEYWORDS)
-        or find_internal_link_by_path(home_html, base_url, GALLERY_PATH_FALLBACKS)
-    )
-    if gallery_url:
+    # The first few gallery-like links, not only the first (2026-10-29: Forest Lawn's first was a visitors' guide; its
+    # photos were on the features page further down).
+    links = _matching_links(home_html, base_url, GALLERY_URL_KEYWORDS)
+    if not links:
+        u = find_internal_link_by_path(home_html, base_url, GALLERY_PATH_FALLBACKS)
+        links = [u] if u else []
+    for gallery_url in links:
         page_html, status, _ = fetch_page(gallery_url, timeout=10)
         if page_html and status and 200 <= status < 300:
             count = _count_inline_images(page_html)
@@ -542,7 +579,17 @@ INVENTORY_URL_KEYWORDS = [
     "/services", "/our-services", "/options", "/burial", "/cremation",
     "/mausoleum", "/columbarium", "/property", "/sections", "/products",
     "/what-we-offer", "/offerings",
+    "properties",          # "/cemetery-properties/" (Forest Lawn, 2026-10-29): where the offerings were spelled out
 ]
+# Said as plain words, matched as whole words (2026-10-29: Forest Lawn's Cemetery Properties page names "ground space",
+# "crypts" and "niches", none of them in INVENTORY_TERMS, so its offerings read as one; whole words, so "crypt" is not
+# found inside "encrypted"). INVENTORY_TERMS keep their old substring match, unchanged.
+INVENTORY_WORDS = {
+    "plots": ["ground space", "ground spaces", "burial space", "burial spaces", "grave space", "grave spaces"],
+    "mausoleum": ["crypt", "crypts"],
+    "columbarium": ["niche", "niches"],
+    "family_property": ["family property", "family estate", "family estates", "private garden", "private gardens"],
+}
 
 
 def detect_inventory_offerings(html):
@@ -558,17 +605,25 @@ def detect_inventory_offerings(html):
     return found
 
 
+def _inventory_words(html):
+    """The INVENTORY_WORDS a page says, each as a whole word, tags removed."""
+    if not html:
+        return set()
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).lower()
+    return {w for words in INVENTORY_WORDS.values() for w in words if re.search(r"\b%s\b" % re.escape(w), text)}
+
+
 def check_inventory_info(home_html, base_url):
     """Pass if the site clearly explains 3+ distinct offerings. Looks at
     homepage AND a services-style sub-page if linked."""
-    found = set(detect_inventory_offerings(home_html))
+    found = set(detect_inventory_offerings(home_html)) | _inventory_words(home_html)
 
-    # Pull in a services / options page if linked
-    sub_url = find_internal_link(home_html, base_url, INVENTORY_URL_KEYWORDS)
-    if sub_url:
+    # Pull in the services / options pages linked, the first three (2026-10-29: one was not enough)
+    for sub_url in _matching_links(home_html, base_url, INVENTORY_URL_KEYWORDS):
         page_html, status, _ = fetch_page(sub_url, timeout=10)
         if page_html and status and 200 <= status < 300:
             found.update(detect_inventory_offerings(page_html))
+            found.update(_inventory_words(page_html))
 
     # Treat duplicates intelligently: "single plot" + "double plot" + "family plot"
     # all belong to the same "burial plot" bucket. Bucket distinct categories.
@@ -585,6 +640,8 @@ def check_inventory_info(home_html, base_url):
         "markers": {"marker", "markers", "monument", "monuments", "headstone",
                     "memorial bench", "memorial benches"},
     }
+    for bucket, words in INVENTORY_WORDS.items():          # the plain words, whole-word matched (2026-10-29)
+        buckets[bucket] = buckets.get(bucket, set()) | set(words)
 
     distinct_buckets = sum(1 for terms in buckets.values() if found & terms)
     return distinct_buckets >= 3, sorted(found)
@@ -771,6 +828,23 @@ def audit(url):
             "checks": {},
             "grade": "F",
         }
+    moved = site_reader.landed_elsewhere(url, final_url)
+    if moved:
+        # Before the error check: an address that lands on another site, even one that answers with an error, is
+    # the finding. The address we have lands on another site (Welton 2026-10-29): another site is not theirs to audit, and
+        # where it went is the finding ("is your website still at that address?").
+        return {
+            "url": final_url,
+            "status": status,
+            "error": "the address goes to another site",
+            "checks": {},
+            "grade": None,
+            "unverified": True,
+            "unverified_reason": site_reader.MOVED % (site_reader.site_name(url), moved),
+            "moved_from": site_reader.site_name(url),
+            "moved_to": moved,
+        }
+
     if status and status >= 400:
         return {
             "url": url,

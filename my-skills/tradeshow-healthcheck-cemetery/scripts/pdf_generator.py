@@ -13,6 +13,7 @@ from pathlib import Path
 
 import headline
 import listing_confirm
+import site_reader
 import ads_words
 import ads_records
 from xml.sax.saxutils import escape
@@ -358,11 +359,12 @@ def _build_recommendations_top2(results):
     elif web_checks.get("preneed_form") is False:
         score = 60
         candidates.append((score,
-            f"Your website has no clear preneed contact form or 'schedule a "
-            f"property tour' CTA. Preneed shoppers will not pick up the phone "
-            f"on the first visit. They want to fill out a form and have "
-            f"someone call them back. Without that, you lose them to the "
-            f"cemetery whose form is one click away."
+            # Welton's wording, 2026-10-29: what is missing is a way to ask about preplanning, not any contact form
+            # (a general contact form is not a preneed form); "families", and no claim about what families did.
+            f"Your website has no form for asking about preplanning or booking "
+            f"a property tour. Families looking into preplanning rarely call "
+            f"first. They want to ask online and have someone get back to them, "
+            f"and right now there is nowhere on your site to do that."
         ))
     elif web_checks.get("inventory_info") is False:
         score = 55
@@ -665,6 +667,8 @@ def build_pdf(results):
     if web.get("unverified"):
         reason = web.get("unverified_reason") or web.get("error") or "blocked"
         web_detail = reason if reason.startswith("Couldn't check") else f"Couldn't check: {reason}"
+        if site_reader.moved_note(web):
+            web_detail = "<b>%s</b>" % escape(site_reader.moved_note(web, sheet=True))    # the finding, said plainly
         web_grade_display = "N/A"
     else:
         wc = web.get("checks", {})
