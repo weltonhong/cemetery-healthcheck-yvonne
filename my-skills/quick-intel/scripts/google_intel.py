@@ -185,17 +185,58 @@ def get_api_key():
     return key
 
 
-def places_search(query, api_key, max_results=5):
-    """Run a Places API text search. Returns list of place dicts."""
+# Google's raw answers, kept while main() runs (Welton 2026-10-29: "Make the archive keep Google's raw answer, not just
+# what the lookup kept from it"). Haven, Ozark MO: the live app's rival search came back without Amedisys while the
+# same code here found it, and only the kept result was archived. main() turns recording on and prints the answers as
+# "places_raw"; the booth saves that output in results.json. None outside main(): the booth app's own process calls
+# places_search for "Is this your address?" on every scan, and must not keep a growing list.
+_RAW = None
+
+
+# WHERE A PLACES SEARCH IS PINNED (Welton 2026-10-29). A text search that sends only words is answered partly by where
+# the REQUEST comes from, so the live booth app on its server and this PC got different listings for the same words
+# (Haven, Ozark MO: the server's rival search had no Amedisys and the sheet lost its competitor section). Each of the
+# booth's four Places searches (the "Is this your address?" lookup in scripts/state_check.py, and here their own
+# listing, the rival search and the town) now sends the town's place as a locationBias circle: a bias, never a
+# restriction, so a listing outside the circle can still come back. The same circle and the same record as pre-call's
+# half (pre-call-audit/scripts/places_pin.py, which this file cannot import: the booth deploy repos do not carry it);
+# test_booth_places_pin.py asserts the two agree whenever both are in the tree.
+# No place available: the search goes out with words only, exactly as before, and the output records why. Which
+# listing is theirs is still decided by phone or street (business_identity), so an unpinned search can confirm fewer
+# listings, never a different business.
+RADIUS_M = 50000.0      # the largest circle Places text search accepts for a locationBias (50 km)
+
+
+def bias(at, radius_m=RADIUS_M):
+    """The locationBias for a search pinned at `at` (lat, lng), or None when there is no place."""
+    if not at:
+        return None
+    return {"circle": {"center": {"latitude": float(at[0]), "longitude": float(at[1])},
+                       "radius": float(radius_m)}}
+
+
+def pin_note(at, how):
+    """What the output records about the pin: where from, or why there was none."""
+    if at:
+        return {"pinned": True, "at": [float(at[0]), float(at[1])], "radius_m": RADIUS_M, "from": how}
+    return {"pinned": False, "at": None, "why": how or "no place available",
+            "effect": "searched with words only, as before 2026-10-29"}
+
+
+def places_search(query, api_key, max_results=5, at=None):
+    """Run a Places API text search, pinned at `at` (lat, lng) when given. Returns list of place dicts."""
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": api_key,
         "X-Goog-FieldMask": FIELD_MASK,
     }
-    body = json.dumps({
+    sent = {
         "textQuery": query,
         "maxResultCount": max_results,
-    }).encode("utf-8")
+    }
+    if bias(at):
+        sent["locationBias"] = bias(at)
+    body = json.dumps(sent).encode("utf-8")
 
     try:
         req = urllib.request.Request(
@@ -204,7 +245,11 @@ def places_search(query, api_key, max_results=5):
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
+        if _RAW is not None:
+            _RAW.append({"sent": sent, "error": str(e)})
         return {"error": str(e)}
+    if _RAW is not None:
+        _RAW.append({"sent": sent, "answer": data})
 
     results = []
     for place in data.get("places", []):
@@ -302,6 +347,42 @@ def _same_place(a, b):
 
 NEARBY_MILES = 25
 
+# THEIR OWN GROUNDS ARE NEVER A RIVAL (Welton 2026-10-30). Pinned to Glendale with no listing confirmed, the cemetery
+# booth named "Holly Terrace", a section of Forest Lawn's own grounds, as the most-reviewed nearby listing, with three
+# graves on the same grounds behind it. Google marks almost none of them as inside Forest Lawn (containingPlaces), so
+# "inside" is not enough: a listing is on their grounds when it is the same place, sits at their street address in any
+# suite (Haven's Suites b and d), or lies within the trade's grounds distance of their own listing. Measured on the
+# 10-30 Forest Lawn answers: every grounds place within 671 m of the Forest Lawn listing, the real rival (Grand View)
+# 5.8 km away. Setting a real rival in the same building aside costs a name on the sheet (the next rival, or the plain
+# "no rival" line); naming their own section costs the sale, so the exclusion is the cheap direction.
+GROUNDS_M = {"cemetery": 1000.0}
+GROUNDS_M_DEFAULT = 100.0
+_UNIT = re.compile(r"\b(ste|suite|unit|apt|bldg|building|fl|floor|rm|room|space)\b.*$|#.*$")
+
+
+def _street(address):
+    """'850 n 25th st' from '850 N 25th St Ste a, Ozark, MO 65721, USA': the street line without its suite, or ''
+    when the address has no street number (a bare 'Glendale, CA 91205, USA' names no street)."""
+    first = (address or "").split(",")[0].strip()
+    if re.fullmatch(r"[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}", first.upper()):
+        return ""                         # a plus code ("4QF3+52"): a map square, not a street
+    line = " ".join(re.findall(r"[a-z0-9]+", _UNIT.sub("", first.lower())))
+    return line if re.match(r"\d", line) else ""
+
+
+def _on_grounds(c, own, radius_m):
+    """The listing of `own` whose grounds listing `c` is on, or None."""
+    for o in own:
+        if _same_place(c, o):
+            return o
+        sc = _street(c.get("address"))
+        if sc and sc == _street(o.get("address")):
+            return o
+        d = _miles(c, o)
+        if d is not None and d * 1609.344 <= radius_m:
+            return o
+    return None
+
 
 def _miles(a, b):
     """Great-circle miles between two Places locations, or None when either is missing."""
@@ -323,11 +404,11 @@ def _identity():
     return business_identity
 
 
-def _town_point(city, state, api_key):
+def _town_point(city, state, api_key, at=None):
     """The town the rep typed, as a Places listing with a map position, or None. Only an answer that is the town
     itself (a locality) in the typed state counts; anything else is no answer, never a guess."""
     bi = _identity()
-    res = places_search("%s, %s" % (city, state), api_key, max_results=3)
+    res = places_search("%s, %s" % (city, state), api_key, max_results=3, **({"at": at} if at else {}))
     for p in res if isinstance(res, list) else []:
         types = set(p.get("types") or []) | {p.get("primary_type") or ""}
         if (types & {"locality", "sublocality", "administrative_area_level_3", "postal_town"}
@@ -395,7 +476,13 @@ def main():
     # and name only listings that are plainly not them. Without it (Quick Intel cards) nothing changes.
     parser.add_argument("--town-fallback", action="store_true",
                         help="unconfirmed listing: measure nearby from the town and keep only plainly different rivals")
+    # The town's place, from the caller's own town lookup (the booth: state_check.town_pin), and where it came from
+    # or why there is none. Without --latlng every search goes out with words only and "places_pin" says why.
+    parser.add_argument("--latlng", default="", help="LAT,LNG: pin the Places searches here (50 km bias)")
+    parser.add_argument("--pin-from", default="", help="where --latlng came from, or why there is no place")
     args = parser.parse_args()
+    global _RAW
+    _RAW = []          # every Places request this lookup sends and Google's whole answer, printed as "places_raw"
 
     vertical_key = resolve_vertical(args.vertical)
     config = VERTICAL_CONFIG[vertical_key]
@@ -405,13 +492,23 @@ def main():
         print(json.dumps({"error": "GOOGLE_API_KEY not found"}))
         sys.exit(1)
 
+    at = None
+    try:
+        lat, lng = (float(x) for x in args.latlng.split(","))
+        at = (lat, lng)
+    except ValueError:
+        pass
+    pin = {"at": at} if at else {}
+    places_pin = pin_note(at, args.pin_from if at or args.pin_from else
+                          ("--latlng not readable: %r" % args.latlng if args.latlng else "no place given (no --latlng)"))
+
     # Search 1: Target business (exact name + location)
     target_query = f"{args.business} {args.city} {args.state}"
-    target_results = places_search(target_query, api_key, max_results=3)
+    target_results = places_search(target_query, api_key, max_results=3, **pin)
 
     # Search 2: Competitors (vertical-specific query + city)
     competitor_query = f"{config['query']} {args.city} {args.state}"
-    competitor_results = places_search(competitor_query, api_key, max_results=10)
+    competitor_results = places_search(competitor_query, api_key, max_results=10, **pin)
 
     # Identify target in results
     # The first result is not the business until the shared identity rule says so (Welton 2026-10-22, P20): the
@@ -448,7 +545,7 @@ def main():
     if isinstance(target, dict) and _miles(target, target) is not None:
         anchor, nearby_from = target, "their listing"
     elif args.town_fallback and not target and isinstance(competitor_results, list) and isinstance(target_results, list):
-        anchor = _town_point(args.city, args.state, api_key)
+        anchor = _town_point(args.city, args.state, api_key, **pin)
         nearby_from = "the center of %s" % args.city if anchor else None
     if isinstance(competitor_results, list):
         if anchor is None:
@@ -466,6 +563,14 @@ def main():
         for p in (target_results if isinstance(target_results, list) else []) + nearby:
             if p.get("place_id") and _could_be_them(args.business, p.get("name") or "", args.state):
                 maybe_theirs.add(p["place_id"])
+    # Their own grounds: their confirmed listing, or (unconfirmed) every listing that could be theirs. Confirmed too
+    # (2026-10-30, held for Welton as its own commit): with Forest Lawn confirmed by phone, Holly Terrace and a grave
+    # still made the rival list, and the PDF prints the three most-reviewed rivals.
+    own_grounds = ([target] if isinstance(target, dict) and target.get("place_id") else
+                   [p for p in (target_results if isinstance(target_results, list) else []) + nearby
+                    if p.get("place_id") in maybe_theirs])
+    grounds_m = GROUNDS_M.get(vertical_key, GROUNDS_M_DEFAULT)
+    on_grounds = []
     if isinstance(competitor_results, list):
         for c in nearby:
             cname = c.get("name", "") or ""
@@ -477,6 +582,10 @@ def main():
             if not target and nearby_from != "their listing" and (
                     _could_be_them(args.business, cname, args.state) or set(c.get("inside") or []) & maybe_theirs):
                 cant_tell.append(cname)
+                continue
+            o = _on_grounds(c, own_grounds, grounds_m)
+            if o is not None:
+                on_grounds.append({"name": cname, "theirs": o.get("name") or ""})
                 continue
             if not matches_vertical(c, config):
                 continue
@@ -505,6 +614,15 @@ def main():
         # word with the name and their listing could not be confirmed (Welton 2026-10-29).
         "nearby_from": nearby_from,
         "cant_tell_listings": cant_tell,
+        # Nearby listings left off the rival list because they sit on their own grounds, each with the listing of
+        # theirs it sits beside (Welton 2026-10-30).
+        "on_their_grounds": on_grounds,
+        "grounds_m": grounds_m,
+        # What was sent to Google (the words, and the locationBias when pinned) and its whole answer, for each
+        # Places search.
+        "places_raw": _RAW,
+        # Where the searches were pinned, or why they went out with words only (Welton 2026-10-29).
+        "places_pin": places_pin,
     }
 
     print(json.dumps(output, indent=2))
