@@ -567,7 +567,7 @@ def ddg_html_search(query):
     return results
 
 
-def check_seo_per_bucket(business, website, buckets, own_cids=(), state="", listings=(), door=None):
+def check_seo_per_bucket(business, website, buckets, own_cids=(), state="", listings=(), door=None, phones=(), street=""):
     """For each bucket, run the SERP rank script with that bucket's query."""
     biz_domain = ""
     if website:
@@ -593,6 +593,10 @@ def check_seo_per_bucket(business, website, buckets, own_cids=(), state="", list
                     "--city", f"{geo_city} {state}".strip(),
                     "--queries", query,
                     "--cids", ",".join(own_cids),
+                    # The phone and street on their own listing: whose page ranks on a shared franchise website
+                    # (measured.franchise_rank, Welton 2026-11-04).
+                    "--phones", ",".join(p for p in phones if p),
+                    "--street", street or "",
                     *(["--latlng", "%s,%s" % tuple(latlng)] if latlng else []),
                 ],
                 capture_output=True, text=True, timeout=120,
@@ -1166,7 +1170,7 @@ def run_health_check(business, cities, state, listing=None, phone="", pin=None):
     with ThreadPoolExecutor(max_workers=4) as ex:
         futures = {
             ex.submit(ads_records.check, website): "ads_records",
-            ex.submit(check_seo_per_bucket, business, website, buckets, own_cids, state, intel.get("nearby_listings") or [], measured.door_point(target) if known else None): "seo",
+            ex.submit(check_seo_per_bucket, business, website, buckets, own_cids, state, intel.get("nearby_listings") or [], measured.door_point(target) if known else None, phones=[target.get("phone")] if known else (), street=target.get("address") if known else ""): "seo",
             ex.submit(check_website, website): "website",
             ex.submit(check_reviews_snapshot, business, home_city, state, intel): "reviews",
         }
